@@ -1,0 +1,252 @@
+---
+- name: Setup Grab!t Authentication App Environment
+  hosts: all
+  become: yes
+  
+  vars:
+    app_name: grabit-auth
+    app_dir: /opt/grabit-app
+    docker_compose_version: "2.20.2"
+    node_version: "18"
+    
+  tasks:
+    # System Updates and Basic Tools
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+      when: ansible_os_family == "Debian"
+      
+    - name: Install basic tools
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - unzip
+          - htop
+          - vim
+          - ufw
+        state: present
+      when: ansible_os_family == "Debian"
+      
+    # Docker Installation
+    - name: Install Docker dependencies
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+        
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+        
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+        
+    - name: Add user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+        
+    # Install Docker Compose
+    - name: Install Docker Compose
+      get_url:
+        url: "https://github.com/docker/compose/releases/download/v{{ docker_compose_version }}/docker-compose-Linux-x86_64"
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+        
+    # Firewall Configuration
+    - name: Configure UFW firewall
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+      loop:
+        - "22"    # SSH
+        - "80"    # HTTP
+        - "443"   # HTTPS
+        - "8080"  # App
+        
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        
+    # Application Directory Setup
+    - name: Create application directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+        
+    # Clone Repository (if needed)
+    - name: Clone application repository
+      git:
+        repo: "https://github.com/yourusername/grabit-auth.git"
+        dest: "{{ app_dir }}"
+        force: yes
+      become_user: "{{ ansible_user }}"
+      tags: clone
+      
+    # Environment Configuration
+    - name: Create environment file
+      template:
+        src: .env.j2
+        dest: "{{ app_dir }}/.env"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+        
+    # SSL Certificate Setup (Let's Encrypt)
+    - name: Install Certbot
+      apt:
+        name:
+          - certbot
+          - python3-certbot-nginx
+        state: present
+        
+    # Log Directory
+    - name: Create logs directory
+      file:
+        path: "{{ app_dir }}/logs"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+        
+    # Backup Directory
+    - name: Create backup directory
+      file:
+        path: /opt/backups
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+        
+    # Monitoring Setup
+    - name: Install monitoring tools
+      apt:
+        name:
+          - htop
+          - iotop
+          - nethogs
+          - ncdu
+        state: present
+        
+    # Logrotate Configuration
+    - name: Configure logrotate for application
+      template:
+        src: logrotate.j2
+        dest: /etc/logrotate.d/grabit-auth
+        mode: '0644'
+        
+    # Systemd Service (for non-Docker deployment)
+    - name: Create systemd service file
+      template:
+        src: grabit-auth.service.j2
+        dest: /etc/systemd/system/grabit-auth.service
+        mode: '0644'
+      notify: reload systemd
+      
+    # Cron Jobs for Maintenance
+    - name: Setup backup cron job
+      cron:
+        name: "Backup Grab!t Auth App"
+        minute: "0"
+        hour: "2"
+        job: "/opt/scripts/backup.sh"
+        user: "{{ ansible_user }}"
+        
+    - name: Setup cleanup cron job
+      cron:
+        name: "Docker cleanup"
+        minute: "0"
+        hour: "1"
+        job: "docker system prune -f"
+        user: "{{ ansible_user }}"
+        
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+        
+    - name: restart docker
+      systemd:
+        name: docker
+        state: restarted
+
+---
+# Deployment Playbook
+- name: Deploy Grab!t Authentication App
+  hosts: all
+  become_user: "{{ ansible_user }}"
+  
+  vars:
+    app_dir: /opt/grabit-app
+    
+  tasks:
+    - name: Pull latest changes from repository
+      git:
+        repo: "https://github.com/yourusername/grabit-auth.git"
+        dest: "{{ app_dir }}"
+        force: yes
+        
+    - name: Build Docker images
+      docker_compose:
+        project_src: "{{ app_dir }}"
+        build: yes
+        
+    - name: Stop existing containers
+      docker_compose:
+        project_src: "{{ app_dir }}"
+        state: absent
+        
+    - name: Start application containers
+      docker_compose:
+        project_src: "{{ app_dir }}"
+        state: present
+        
+    - name: Wait for application to start
+      wait_for:
+        host: localhost
+        port: 8080
+        delay: 10
+        timeout: 60
+        
+    - name: Health check
+      uri:
+        url: http://localhost:8080
+        method: GET
+        status_code: 200
+      register: health_check
+      
+    - name: Display deployment status
+      debug:
+        msg: "✅ Deployment successful! App is running on port 8080"
+      when: health_check.status == 200

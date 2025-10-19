@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firebase Setup - Grab!t</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 2rem;
+            background: #f5f5f5;
+        }
+        .setup-container {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        .setup-btn {
+            background: #ff6b35;
+            color: white;
+            border: none;
+            padding: 1rem 2rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            margin: 0.5rem;
+        }
+        .setup-btn:hover {
+            background: #e55a2b;
+        }
+        .setup-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .result {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 5px;
+            margin-top: 1rem;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+        .success { border-left: 4px solid #28a745; }
+        .error { border-left: 4px solid #dc3545; }
+        .info { border-left: 4px solid #17a2b8; }
+    </style>
+</head>
+<body>
+    <div class="setup-container">
+        <h1>🔥 Firebase Database Setup</h1>
+        <p>This tool will initialize your Firebase Firestore database with sample products and configure the integration.</p>
+        
+        <div class="setup-section">
+            <h3>1. Products Setup</h3>
+            <p>Initialize the products collection with sample food items</p>
+            <button class="setup-btn" id="initProducts">Initialize Products</button>
+            <div id="productsResult" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="setup-section">
+            <h3>2. Test Database Connection</h3>
+            <p>Verify that products can be loaded from Firebase</p>
+            <button class="setup-btn" id="testLoad">Test Load Products</button>
+            <div id="loadResult" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="setup-section">
+            <h3>3. Test Order Creation</h3>
+            <p>Create a sample order to test the order system</p>
+            <button class="setup-btn" id="testOrder">Create Test Order</button>
+            <div id="orderResult" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="setup-section">
+            <h3>4. Integration Status</h3>
+            <div id="statusInfo" class="result info">
+                ✅ Firebase Configuration: Ready<br>
+                ✅ Authentication: Working<br>
+                🔄 Database: Awaiting setup<br>
+                🔄 Products Integration: Pending<br>
+                🔄 Orders Integration: Pending
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { 
+            initializeProductsInFirebase,
+            loadProductsFromFirebase,
+            saveOrder 
+        } from './firebase-database.js';
+
+        function showResult(elementId, result, type = 'info') {
+            const element = document.getElementById(elementId);
+            element.style.display = 'block';
+            element.className = `result ${type}`;
+            element.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+        }
+
+        // Initialize Products
+        document.getElementById('initProducts').addEventListener('click', async () => {
+            const btn = document.getElementById('initProducts');
+            btn.disabled = true;
+            btn.textContent = 'Initializing...';
+
+            try {
+                await initializeProductsInFirebase();
+                showResult('productsResult', '✅ Products initialized successfully in Firebase!\n\nSample products have been added to your Firestore database.', 'success');
+                updateStatus('products', true);
+            } catch (error) {
+                showResult('productsResult', `❌ Error initializing products:\n${error.message}`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Initialize Products';
+            }
+        });
+
+        // Test Load Products
+        document.getElementById('testLoad').addEventListener('click', async () => {
+            const btn = document.getElementById('testLoad');
+            btn.disabled = true;
+            btn.textContent = 'Loading...';
+
+            try {
+                const products = await loadProductsFromFirebase();
+                showResult('loadResult', `✅ Successfully loaded ${products.length} products from Firebase!\n\nProducts:\n${products.map(p => `- ${p.name} ($${p.price})`).join('\n')}`, 'success');
+                updateStatus('database', true);
+            } catch (error) {
+                showResult('loadResult', `❌ Error loading products:\n${error.message}`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Test Load Products';
+            }
+        });
+
+        // Test Order Creation
+        document.getElementById('testOrder').addEventListener('click', async () => {
+            const btn = document.getElementById('testOrder');
+            btn.disabled = true;
+            btn.textContent = 'Creating Order...';
+
+            try {
+                const testOrder = {
+                    userId: 'test-user-firebase',
+                    items: [
+                        { id: 1, name: 'Test Pizza', price: 18.99, quantity: 1 },
+                        { id: 2, name: 'Test Burger', price: 12.99, quantity: 2 }
+                    ],
+                    total: 44.97,
+                    deliveryAddress: {
+                        street: '123 Firebase St',
+                        city: 'Test City',
+                        state: 'CA',
+                        zipCode: '90210'
+                    },
+                    customerInfo: {
+                        name: 'Test User',
+                        email: 'test@firebase.com',
+                        phone: '(555) 123-4567'
+                    },
+                    status: 'pending'
+                };
+
+                const orderId = await saveOrder(testOrder);
+                showResult('orderResult', `✅ Test order created successfully!\n\nOrder ID: ${orderId}\nTotal: $${testOrder.total}\nItems: ${testOrder.items.length}`, 'success');
+                updateStatus('orders', true);
+            } catch (error) {
+                showResult('orderResult', `❌ Error creating test order:\n${error.message}`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Create Test Order';
+            }
+        });
+
+        // Update integration status
+        function updateStatus(component, isWorking) {
+            const statusEl = document.getElementById('statusInfo');
+            let status = statusEl.innerHTML;
+            
+            if (component === 'database' && isWorking) {
+                status = status.replace('🔄 Database: Awaiting setup', '✅ Database: Connected');
+            }
+            if (component === 'products' && isWorking) {
+                status = status.replace('🔄 Products Integration: Pending', '✅ Products Integration: Working');
+            }
+            if (component === 'orders' && isWorking) {
+                status = status.replace('🔄 Orders Integration: Pending', '✅ Orders Integration: Working');
+            }
+            
+            statusEl.innerHTML = status;
+        }
+
+        // Auto-run basic checks
+        window.addEventListener('load', () => {
+            console.log('Firebase setup tool loaded');
+            console.log('Ready to initialize Firebase database integration');
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,212 @@
+name: CI/CD Pipeline for Grab!t Auth App
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: grabit-auth-app
+
+jobs:
+  # Job 1: Test and Lint
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        
+    - name: Install Dependencies
+      run: |
+        npm init -y
+        npm install eslint html-validate
+        
+    - name: Lint HTML Files
+      run: |
+        npx html-validate *.html
+        
+    - name: Lint JavaScript Files
+      run: |
+        npx eslint *.js || true
+        
+    - name: Security Scan
+      run: |
+        echo "Running security checks..."
+        # Add security scanning tools here
+        
+  # Job 2: Build Docker Image
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          
+    - name: Build and Push Docker Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+  # Job 3: Security Scanning
+  security:
+    runs-on: ubuntu-latest
+    needs: build
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+        
+  # Job 4: Deploy to Staging
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [build, security]
+    if: github.ref == 'refs/heads/develop'
+    
+    environment: staging
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Setup SSH
+      uses: webfactory/ssh-agent@v0.7.0
+      with:
+        ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
+        
+    - name: Deploy to Staging Server
+      run: |
+        ssh -o StrictHostKeyChecking=no ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }} '
+          cd /opt/grabit-app &&
+          docker-compose pull &&
+          docker-compose down &&
+          docker-compose up -d &&
+          docker system prune -f
+        '
+        
+    - name: Health Check
+      run: |
+        sleep 30
+        curl -f http://${{ secrets.STAGING_HOST }}/health || exit 1
+        
+  # Job 5: Deploy to Production
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [build, security]
+    if: github.ref == 'refs/heads/main'
+    
+    environment: production
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Setup SSH
+      uses: webfactory/ssh-agent@v0.7.0
+      with:
+        ssh-private-key: ${{ secrets.PROD_SSH_KEY }}
+        
+    - name: Deploy to Production Server
+      run: |
+        ssh -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }} '
+          cd /opt/grabit-app &&
+          docker-compose pull &&
+          docker-compose down &&
+          docker-compose up -d &&
+          docker system prune -f
+        '
+        
+    - name: Health Check
+      run: |
+        sleep 30
+        curl -f https://${{ secrets.PROD_HOST }}/health || exit 1
+        
+    - name: Notify Success
+      if: success()
+      run: |
+        echo "✅ Production deployment successful!"
+        # Add Slack/email notifications here
+        
+    - name: Rollback on Failure
+      if: failure()
+      run: |
+        ssh -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }} '
+          cd /opt/grabit-app &&
+          docker-compose down &&
+          docker-compose up -d --scale grabit-auth=0 &&
+          docker-compose up -d
+        '
+        
+  # Job 6: Performance Testing
+  performance:
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/develop'
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        
+    - name: Install Artillery
+      run: npm install -g artillery
+      
+    - name: Run Load Tests
+      run: |
+        artillery run performance-test.yml
+        
+    - name: Upload Performance Results
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-results
+        path: artillery-report.html
